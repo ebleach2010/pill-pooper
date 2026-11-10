@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Doses">
+<meta name="theme-color" content="#ffffff">
+<title>Dose Tracker</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1b1f24; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #2563eb; --ok: #16a34a; --bad: #dc2626;
+    --today: #eff6ff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  #bar {
+    position: sticky; top: 0; z-index: 10; background: var(--card);
+    border-bottom: 1px solid var(--line); padding: 10px 14px;
+    padding-top: calc(10px + env(safe-area-inset-top));
+    display: flex; gap: 14px; justify-content: space-between; align-items: flex-start;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  }
+  #bar .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  #bar .val { font-size: 17px; font-weight: 600; }
+  #bar .sub { font-size: 14px; }
+  #bar .sub.overdue { color: var(--bad); font-weight: 600; }
+  #left { text-align: right; flex: none; }
+  main { max-width: 560px; margin: 0 auto; padding: 0 12px 40px; }
+  h2 {
+    margin: 28px 0 4px; font-size: 15px; color: var(--accent);
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  .day {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    margin: 10px 0; padding: 4px 12px 6px; scroll-margin-top: 84px;
+  }
+  .day.today { background: var(--today); border-color: var(--accent); box-shadow: 0 0 0 2px rgba(37,99,235,.15); }
+  .day.done { opacity: .5; }
+  .day h3 { margin: 8px 0 2px; font-size: 14px; color: var(--muted); font-weight: 600; }
+  .day.today h3 { color: var(--accent); }
+  label.dose {
+    display: flex; align-items: center; gap: 14px; min-height: 56px;
+    padding: 6px 0; cursor: pointer; border-top: 1px solid var(--line);
+  }
+  label.dose:first-of-type { border-top: 0; }
+  input[type=checkbox] {
+    appearance: none; -webkit-appearance: none; flex: none;
+    width: 44px; height: 44px; margin: 0; border: 2px solid #9ca3af;
+    border-radius: 10px; background: #fff; display: grid; place-content: center;
+  }
+  input[type=checkbox]:checked { background: var(--ok); border-color: var(--ok); }
+  input[type=checkbox]:checked::after { content: "✓"; color: #fff; font-size: 28px; font-weight: 700; line-height: 1; }
+  input[type=checkbox]:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .when { font-size: 19px; font-weight: 600; }
+  .taken { font-size: 12px; color: var(--muted); display: block; font-weight: 400; min-height: 16px; }
+  footer { text-align: center; margin-top: 36px; }
+  footer a { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div>
+    <div class="label">Next dose</div>
+    <div class="val" id="nextWhen">–</div>
+    <div class="sub" id="nextCount"></div>
+  </div>
+  <div id="left">
+    <div class="label">Tablets left</div>
+    <div class="val" id="leftN">–</div>
+  </div>
+</div>
+<main id="list"></main>
+<footer><a href="#" id="reset">Reset all</a></footer>
+
+<script>
+(function () {
+  // ---- Schedule (each dose = one 30 mg tablet; times are local) ----
+  var THREE = ["05:00", "14:15", "23:30"];
+  var TWO = ["09:15", "19:15"];
+  // [y, m, d, tablets-per-day-pattern]
+  var PHASES = [
+    { name: "Phase 1 · 85 mg/day", days: [
+      [2026,11,10,["08:00","13:00","23:30"]],
+      [2026,11,11,3],[2026,11,12,3],[2026,11,13,3],[2026,11,14,2],
+      [2026,11,15,3],[2026,11,16,3],[2026,11,17,3],[2026,11,18,3] ] },
+    { name: "Phase 2 · 80 mg/day", days: [
+      [2026,11,19,3],[2026,11,20,3],[2026,11,21,2],
+      [2026,11,22,3],[2026,11,23,3],[2026,11,24,2] ] },
+    { name: "Phase 3 · 75 mg/day", days: [
+      [2026,11,25,3],[2026,11,26,2],[2026,11,27,3],[2026,11,28,2],
+      [2026,11,29,3],[2026,11,30,2],[2026,12,1,3],[2026,12,2,2] ] }
+  ];
+  var PRE_TAKEN = { "2026-11-10T08:00": 1, "2026-11-10T13:00": 1 }; // taken before the app existed
+  var TOTAL_TABLETS = 60;
+  var STORE = "pillpooper.v1", SEEDED = "pillpooper.seeded";
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  var DAYS = [], DOSES = [];
+  PHASES.forEach(function (ph) {
+    var phase = { name: ph.name, days: [] };
+    ph.days.forEach(function (d) {
+      var times = Array.isArray(d[3]) ? d[3] : (d[3] === 3 ? THREE : TWO);
+      var date = d[0] + "-" + pad(d[1]) + "-" + pad(d[2]);
+      var day = { date: date, y: d[0], m: d[1], d: d[2], doses: [] };
+      times.forEach(function (t) {
+        var hm = t.split(":");
+        var dose = { key: date + "T" + t, day: day,
+          at: new Date(d[0], d[1] - 1, d[2], +hm[0], +hm[1]) };
+        day.doses.push(dose); DOSES.push(dose);
+      });
+      phase.days.push(day); DAYS.push(day);
+    });
+    DAYS.phases = (DAYS.phases || []).concat(phase);
+  });
+
+  // ---- Storage (falls back to memory if localStorage is blocked) ----
+  var mem = {}, state;
+  function load() {
+    try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return mem; }
+  }
+  function save() {
+    mem = state;
+    try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {}
+  }
+  function seed() {
+    Object.keys(PRE_TAKEN).forEach(function (k) { if (!state[k]) state[k] = { pre: true }; });
+  }
+  state = load();
+  var seeded = false;
+  try { seeded = localStorage.getItem(SEEDED); } catch (e) {}
+  if (!seeded) {
+    seed(); save();
+    try { localStorage.setItem(SEEDED, "1"); } catch (e) {}
+  }
+
+  // ---- Formatting ----
+  function fmtTime(d) {
+    var h = d.getHours(), m = d.getMinutes(), ap = h >= 12 ? "PM" : "AM";
+    return ((h % 12) || 12) + ":" + pad(m) + " " + ap;
+  }
+  var WD = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"], MO = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function fmtDay(y, m, d) { return WD[new Date(y, m - 1, d).getDay()] + " " + MO[m - 1] + " " + d; }
+  function takenText(rec) {
+    if (rec.pre) return "taken earlier";
+    return "taken " + fmtTime(new Date(rec.t));
+  }
+  function dur(ms) {
+    var mins = Math.max(0, Math.round(ms / 60000)), d = Math.floor(mins / 1440),
+        h = Math.floor((mins % 1440) / 60), m = mins % 60;
+    if (d) return d + "d " + h + "h";
+    if (h) return h + "h " + m + "m";
+    return m + "m";
+  }
+  function todayStr() {
+    var n = new Date();
+    return n.getFullYear() + "-" + pad(n.getMonth() + 1) + "-" + pad(n.getDate());
+  }
+
+  // ---- Render ----
+  var list = document.getElementById("list"), boxes = {}, dayEls = {};
+  DAYS.phases.forEach(function (ph) {
+    var h = document.createElement("h2"); h.textContent = ph.name; list.appendChild(h);
+    ph.days.forEach(function (day) {
+      var el = document.createElement("section");
+      el.className = "day"; el.id = "d" + day.date; dayEls[day.date] = el;
+      var h3 = document.createElement("h3"); h3.textContent = fmtDay(day.y, day.m, day.d);
+      el.appendChild(h3);
+      day.doses.forEach(function (dose) {
+        var lab = document.createElement("label"); lab.className = "dose";
+        var cb = document.createElement("input"); cb.type = "checkbox";
+        cb.setAttribute("aria-label", fmtDay(day.y, day.m, day.d) + " " + fmtTime(dose.at));
+        var txt = document.createElement("span");
+        var when = document.createElement("span"); when.className = "when"; when.textContent = fmtTime(dose.at);
+        var tk = document.createElement("span"); tk.className = "taken";
+        txt.appendChild(when); txt.appendChild(tk);
+        lab.appendChild(cb); lab.appendChild(txt); el.appendChild(lab);
+        boxes[dose.key] = { cb: cb, tk: tk };
+        cb.addEventListener("change", function () {
+          if (cb.checked) state[dose.key] = { t: Date.now() }; else delete state[dose.key];
+          save(); refresh();
+        });
+      });
+      list.appendChild(el);
+    });
+  });
+
+  function refresh() {
+    var checked = 0, used = 0, next = null, t = todayStr();
+    DOSES.forEach(function (dose) {
+      var rec = state[dose.key], b = boxes[dose.key];
+      b.cb.checked = !!rec;
+      b.tk.textContent = rec ? takenText(rec) : "";
+      if (rec) { checked++; if (!rec.pre && !PRE_TAKEN[dose.key]) used++; }
+      else if (!next) next = dose;
+    });
+    DAYS.forEach(function (day) {
+      var el = dayEls[day.date];
+      var all = day.doses.every(function (d) { return state[d.key]; });
+      el.classList.toggle("today", day.date === t);
+      el.classList.toggle("done", day.date < t && all);
+    });
+    document.getElementById("leftN").textContent = TOTAL_TABLETS - used;
+    var nw = document.getElementById("nextWhen"), nc = document.getElementById("nextCount");
+    if (!next) { nw.textContent = "All done 🎉"; nc.textContent = ""; nc.className = "sub"; return; }
+    var diff = next.at - new Date();
+    nw.textContent = fmtDay(next.day.y, next.day.m, next.day.d) + " · " + fmtTime(next.at);
+    if (diff < 0) { nc.textContent = "overdue " + dur(-diff); nc.className = "sub overdue"; }
+    else { nc.textContent = "in " + dur(diff); nc.className = "sub"; }
+  }
+
+  document.getElementById("reset").addEventListener("click", function (e) {
+    e.preventDefault();
+    if (confirm("Reset all doses? This clears every checkmark and time.")) {
+      state = {}; seed(); save(); refresh();
+    }
+  });
+
+  refresh();
+  setInterval(refresh, 30000);
+  document.addEventListener("visibilitychange", refresh);
+
+  // ---- Scroll to today (or nearest scheduled day) ----
+  var t = todayStr(), target = DAYS[0];
+  for (var i = 0; i < DAYS.length; i++) { if (DAYS[i].date >= t) { target = DAYS[i]; break; } target = DAYS[i]; }
+  var bar = document.getElementById("bar");
+  window.addEventListener("load", function () {
+    var el = dayEls[target.date];
+    var y = el.getBoundingClientRect().top + window.pageYOffset - bar.offsetHeight - 8;
+    window.scrollTo(0, Math.max(0, y));
+  });
+})();
+</script>
+</body>
+</html>
